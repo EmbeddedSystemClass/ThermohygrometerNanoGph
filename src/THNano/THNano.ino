@@ -45,15 +45,15 @@
 #define DSP_AWAKE               10
 #define LED_AWAKE               5
 
-uint8_t seconds_counter = 0;
-uint16_t seconds_counter_state = 0;
-uint32_t seconds_counter_sample = 0;
+volatile uint8_t seconds_counter = 0;
+volatile uint16_t seconds_counter_state = 0;
+volatile uint32_t seconds_counter_sample = 0;
 
 short i_stamp = 0;
 
 uint8_t minutes = 5;
 
-uint8_t state = STATE_IDLE;
+volatile uint8_t state = STATE_IDLE;
 
 float temperature = -1, humidity = -1;
 float t_max = -1, t_min = -1, h_max = -1, h_min = -1;
@@ -72,6 +72,8 @@ long click_state_timestamp = -1;
 volatile bool busy = false;
 bool displayWake = true;
 
+bool refreshDisplayFlag = false;
+
 // Create an instance of the Adafruit_NeoPixel class called "leds".
 // That'll be what we refer to from here on...
 Adafruit_NeoPixel leds = Adafruit_NeoPixel(LED_COUNT, LED_PIN, NEO_RGB + NEO_KHZ800);
@@ -83,14 +85,14 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 DHT dht(DHT_PIN, DHTTYPE);
 
 void sleepDisplay() {
-  if(displayWake) {
+  if (displayWake) {
     display.ssd1306_command(SSD1306_DISPLAYOFF);
     displayWake = false;
   }
 }
 
 void wakeDisplay() {
-  if(!displayWake) {
+  if (!displayWake) {
     display.ssd1306_command(SSD1306_DISPLAYON);
     displayWake = true;
   }
@@ -238,16 +240,16 @@ void readInput() {
   int val = digitalRead(INPUT_CMD);
   if (val == HIGH) {
     last_click_state_timestamp = millis();
-    if(click_state_timestamp < 0) {
+    if (click_state_timestamp < 0) {
       click_state_timestamp = last_click_state_timestamp;
     }
-    if((last_click_state_timestamp - click_state_timestamp) > 3000 && !was_long_press_mode) {
+    if ((last_click_state_timestamp - click_state_timestamp) > 3000 && !was_long_press_mode) {
       state = STATE_SETTINGS;
 
-      if(long_press_mode) {
+      if (long_press_mode) {
         long_click = true;
       }
-      
+
       enter_long_press_mode = true;
       long_press_mode = true;
       was_long_press_mode = true;
@@ -256,14 +258,16 @@ void readInput() {
   } else {
     long timestamp = millis();
     if (last_click_state == HIGH && (timestamp - last_click_state_timestamp) > 100) {
-      if(enter_long_press_mode) {
+      if (enter_long_press_mode) {
         enter_long_press_mode = false;
-      } else if(long_press_mode) {
+      } else if (long_press_mode) {
         long_press_mode = false;
         state = STATE_WAKE_LED;
       } else {
         click++;
       }
+
+      refreshDisplayFlag = true;
 
       was_long_press_mode = false;
       click_state_timestamp = -1;
@@ -282,7 +286,7 @@ void checkState() {
 
       sleepDisplay();
 
-      if(click > 0) {
+      if (click > 0) {
         --click;
         state = STATE_WAKE_LED;
       }
@@ -290,19 +294,22 @@ void checkState() {
       break;
     case STATE_WAKE_LED:
       wakeDisplay();
-      
+
       refreshLed();
-      refreshDisplay();
+      if(refreshDisplayFlag) {
+        refreshDisplay();
+        refreshDisplayFlag = false;
+      }
 
       if (seconds_counter_state > LED_AWAKE) {
         state = STATE_WAKE;
       }
 
-      if(click > 0) {
+      if (click > 0) {
         --click;
         state = STATE_TEMPERATURE;
       }
-      
+
       break;
     case STATE_WAKE:
       clearLEDs();
@@ -310,44 +317,53 @@ void checkState() {
 
       wakeDisplay();
 
-      refreshDisplay();
+      if(refreshDisplayFlag) {
+        refreshDisplay();
+        refreshDisplayFlag = false;
+      }
 
       if (seconds_counter_state > DSP_AWAKE) {
         state = STATE_SLEEP;
       }
 
-      if(click > 0) {
+      if (click > 0) {
         --click;
         state = STATE_WAKE_LED;
       }
-      
+
       break;
     case STATE_TEMPERATURE:
-      displayGraph(0);
-      
+      if(refreshDisplayFlag) {
+        displayGraph(0);
+        refreshDisplayFlag = false;
+      }
+
       if (seconds_counter_state > DSP_AWAKE) {
         state = STATE_SLEEP;
       }
 
 
-      if(click > 0) {
+      if (click > 0) {
         --click;
         state = STATE_HUMIDITY;
       }
-      
+
       break;
     case STATE_HUMIDITY:
-      displayGraph(1);
+      if(refreshDisplayFlag) {
+        displayGraph(1);
+        refreshDisplayFlag = false;
+      }
 
       if (seconds_counter_state > DSP_AWAKE) {
         state = STATE_SLEEP;
       }
 
-      if(click > 0) {
+      if (click > 0) {
         --click;
         state = STATE_WAKE_LED;
       }
-      
+
       break;
     case STATE_SETTINGS:
       wakeDisplay();
@@ -362,8 +378,8 @@ void checkState() {
       display.println(F(" minutes"));
       display.display();
 
-      if(long_click) {
-        switch(minutes) {
+      if (long_click) {
+        switch (minutes) {
           case 5:
             minutes = 10;
             break;
@@ -378,21 +394,21 @@ void checkState() {
       }
 
       EEPROM.write(0, (byte) minutes);
-      
+
       break;
   }
 
-  if(seconds_counter_state > (DSP_AWAKE + 1)) {
+  if (seconds_counter_state > (DSP_AWAKE + 1)) {
     seconds_counter_state = 0;
   }
 }
 
-void writeEEPROM(){
-  if(seconds_counter_sample >= (minutes * 60L)) {
+void writeEEPROM() {
+  if (seconds_counter_sample >= (minutes * 60L)) {
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.print("*>SAMPLE:");
     Serial.println(seconds_counter_sample);
-    
+
     seconds_counter_sample = 0;
     if (i_stamp < ARRAY_LEN) {
       EEPROM.write(ARRAY_START + i_stamp, (byte) round(temperature));
@@ -446,6 +462,7 @@ void setup() {
   display.println(F("@madnick_93"));
   display.println(F("CRIME FOR CLIMB"));
   display.println(F("OMEGASOFTWARE"));
+  display.println(F("v1.1"));
   display.display();
 
   cli();
@@ -470,7 +487,7 @@ void setup() {
   leds.show();   // ...but the LEDs don't actually update until you call this.
 
   minutes = (byte) EEPROM.read(0);
-  
+
   digitalWrite(LED_BUILTIN, LOW);
 }
 
@@ -485,42 +502,44 @@ void loop() {
 
     float _h = (float) dht.readHumidity();
     float _t = (float) dht.readTemperature();
-  
+
     if (!isnan(_h) && !isnan(_t)) {
       humidity = _h + H_OFFSET;
       temperature = _t + T_OFFSET;
-  
+
       if (first) {
         t_min = temperature;
         t_max = temperature;
         h_max = humidity;
         h_min = humidity;
       }
+
+      readInput();
+
+      // Check max and min
+      if (temperature > t_max) {
+        t_max = temperature;
+      }
+      if (humidity > h_max) {
+        h_max = humidity;
+      }
+      if (temperature < t_min) {
+        t_min = temperature;
+      }
+      if (humidity < h_min) {
+        h_min = humidity;
+      }
+
+      refreshDisplayFlag = true;
     }
 
     if (first) {
       seconds_counter_sample = (minutes * 60L);
     }
 
-    if(first) {
+    if (first) {
       first = false;
     }
-  }
-
-  readInput();
-
-  // Check max and min
-  if (temperature > t_max) {
-    t_max = temperature;
-  }
-  if (humidity > h_max) {
-    h_max = humidity;
-  }
-  if (temperature < t_min) {
-    t_min = temperature;
-  }
-  if (humidity < h_min) {
-    h_min = humidity;
   }
 
   readInput();
