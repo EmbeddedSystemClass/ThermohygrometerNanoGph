@@ -487,6 +487,13 @@ void setup() {
   leds.show();   // ...but the LEDs don't actually update until you call this.
 
   minutes = (byte) EEPROM.read(0);
+  if(minutes != 1 || minutes != 5 || minutes != 10) {
+    minutes = 5;
+    EEPROM.write(0, (byte) minutes);
+  }
+
+  Serial.print(F("*>MINUTES:"));
+  Serial.println(minutes);
 
   digitalWrite(LED_BUILTIN, LOW);
 }
@@ -506,6 +513,12 @@ void loop() {
     if (!isnan(_h) && !isnan(_t)) {
       humidity = _h + H_OFFSET;
       temperature = _t + T_OFFSET;
+
+      Serial.print(F("*>T:"));
+      Serial.println(temperature);
+      Serial.print(F("*>H:"));
+      Serial.println(humidity);
+      Serial.flush();
 
       if (first) {
         t_min = temperature;
