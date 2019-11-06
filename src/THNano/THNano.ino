@@ -298,6 +298,7 @@ void checkState() {
       refreshLed();
       if(refreshDisplayFlag) {
         refreshDisplay();
+        display.display();
         refreshDisplayFlag = false;
       }
 
@@ -319,6 +320,7 @@ void checkState() {
 
       if(refreshDisplayFlag) {
         refreshDisplay();
+        display.display();
         refreshDisplayFlag = false;
       }
 
@@ -335,6 +337,7 @@ void checkState() {
     case STATE_TEMPERATURE:
       if(refreshDisplayFlag) {
         displayGraph(0);
+        display.display();
         refreshDisplayFlag = false;
       }
 
@@ -352,6 +355,7 @@ void checkState() {
     case STATE_HUMIDITY:
       if(refreshDisplayFlag) {
         displayGraph(1);
+        display.display();
         refreshDisplayFlag = false;
       }
 
@@ -487,7 +491,7 @@ void setup() {
   leds.show();   // ...but the LEDs don't actually update until you call this.
 
   minutes = (byte) EEPROM.read(0);
-  if(minutes != 1 || minutes != 5 || minutes != 10) {
+  if(minutes != 1 && minutes != 5 && minutes != 10) {
     minutes = 5;
     EEPROM.write(0, (byte) minutes);
   }
