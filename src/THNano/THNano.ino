@@ -1,11 +1,14 @@
 #include <math.h>
 #include <EEPROM.h>
+#include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <NeoPixelPainter.h>
+#include <Adafruit_BME280.h>
 
+#define SEALEVELPRESSURE_HPA (1008)
 
 #define LED_PIN                 2
 #define LED_COUNT               1
@@ -15,8 +18,11 @@
 #define DHT_PIN                 3
 #define DHTTYPE                 DHT22
 
-#define T_OFFSET                0.0
-#define H_OFFSET                0.0
+#define T_OFFSET1               0.0
+#define H_OFFSET1               0.0
+
+#define T_OFFSET2               0.0
+#define H_OFFSET2               0.0
 
 #define STATE_IDLE              0
 #define STATE_INIT              1
@@ -25,7 +31,8 @@
 #define STATE_WAKE              4
 #define STATE_TEMPERATURE       5
 #define STATE_HUMIDITY          6
-#define STATE_SETTINGS          7
+#define STATE_SENSORS           7
+#define STATE_SETTINGS          8
 
 #define SECONDS                 ((uint8_t) 2)
 
@@ -56,6 +63,9 @@ uint8_t minutes = 5;
 volatile uint8_t state = STATE_IDLE;
 
 float temperature = -1, humidity = -1;
+float pressure = -1, altitude = -1;
+float t1 = -1, h1 = -1;
+float t2 = -1, h2 = -1;
 float t_max = -1, t_min = -1, h_max = -1, h_min = -1;
 
 bool first = true;
@@ -83,6 +93,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // DHT instance
 DHT dht(DHT_PIN, DHTTYPE);
+
+Adafruit_BME280 bme;
 
 void sleepDisplay() {
   if (displayWake) {
@@ -278,6 +290,50 @@ void readInput() {
   }
 }
 
+void displaySensors() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+
+//  display.println(F("SENSORS:"));
+//  display.println(F("AM2302 & BME280"));
+
+  display.println(F("AM2302:"));
+
+  display.print(F("T:  "));
+  display.print(t1);
+  display.print(F(" "));
+  display.print((char)247);
+  display.println(F("C"));
+
+  display.print(F("RH: "));
+  display.print(h1);
+  display.println(F(" %"));
+
+  display.println(F("BME280:"));
+
+  display.print(F("T:  "));
+  display.print(t2);
+  display.print(F(" "));
+  display.print((char)247);
+  display.println(F("C"));
+
+  display.print(F("RH: "));
+  display.print(h2);
+  display.println(F(" %"));
+
+  display.print(F("Pres = "));
+  display.print(pressure);
+  display.println(F(" hPa"));
+
+  display.print(F("Alt = "));
+  display.print(altitude);
+  display.println(F(" m"));
+
+  display.display();
+}
+
 void checkState() {
   switch (state) {
     case STATE_SLEEP:
@@ -296,7 +352,7 @@ void checkState() {
       wakeDisplay();
 
       refreshLed();
-      if(refreshDisplayFlag) {
+      if (refreshDisplayFlag) {
         refreshDisplay();
         display.display();
         refreshDisplayFlag = false;
@@ -318,7 +374,7 @@ void checkState() {
 
       wakeDisplay();
 
-      if(refreshDisplayFlag) {
+      if (refreshDisplayFlag) {
         refreshDisplay();
         display.display();
         refreshDisplayFlag = false;
@@ -335,7 +391,7 @@ void checkState() {
 
       break;
     case STATE_TEMPERATURE:
-      if(refreshDisplayFlag) {
+      if (refreshDisplayFlag) {
         displayGraph(0);
         display.display();
         refreshDisplayFlag = false;
@@ -353,8 +409,25 @@ void checkState() {
 
       break;
     case STATE_HUMIDITY:
-      if(refreshDisplayFlag) {
+      if (refreshDisplayFlag) {
         displayGraph(1);
+        display.display();
+        refreshDisplayFlag = false;
+      }
+
+      if (seconds_counter_state > DSP_AWAKE) {
+        state = STATE_SLEEP;
+      }
+
+      if (click > 0) {
+        --click;
+        state = STATE_SENSORS;
+      }
+
+      break;
+    case STATE_SENSORS:
+      if (refreshDisplayFlag) {
+        displaySensors();
         display.display();
         refreshDisplayFlag = false;
       }
@@ -407,6 +480,41 @@ void checkState() {
   }
 }
 
+void i2cScanner() {
+  byte error, address;
+  int nDevices;
+
+  Serial.println("Scanning...");
+
+  nDevices = 0;
+  for (address = 1; address < 127; address++ ) {
+    // The i2c_scanner uses the return value of
+    // the Write.endTransmisstion to see if
+    // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16)
+        Serial.print("0");
+      Serial.print(address, HEX);
+      Serial.println("  !");
+
+      nDevices++;
+    } else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16)
+        Serial.print("0");
+      Serial.println(address, HEX);
+    }
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found\n");
+  else
+    Serial.println("done\n");
+}
+
 void writeEEPROM() {
   if (seconds_counter_sample >= (minutes * 60L)) {
     digitalWrite(LED_BUILTIN, HIGH);
@@ -430,11 +538,37 @@ void writeEEPROM() {
   }
 }
 
+//void printValues() {
+//  bme.takeForcedMeasurement();
+//
+//  Serial.print(F("Temperature = "));
+//  Serial.print(bme.readTemperature());
+//  Serial.println(F(" *C"));
+//
+//  Serial.print(F("Pressure = "));
+//
+//  Serial.print(bme.readPressure() / 100.0F);
+//  Serial.println(F(" hPa"));
+//
+//  Serial.print(F("Approx. Altitude = "));
+//  Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
+//  Serial.println(F(" m"));
+//
+//  Serial.print(F("Humidity = "));
+//  Serial.print(bme.readHumidity());
+//  Serial.println(F(" %"));
+//
+//  Serial.println();
+//}
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   first = true;
   state = STATE_INIT;
+
+  Wire.begin();
+  Serial.begin(115200);
 
   pinMode(INPUT_CMD, INPUT);
 
@@ -443,8 +577,6 @@ void setup() {
   leds.show();   // ...but the LEDs don't actually update until you call this.
 
   setLEDColor(0xFF0000);
-
-  Serial.begin(9600);
   Serial.println(F("*>INIT"));
 
   while (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -491,13 +623,28 @@ void setup() {
   leds.show();   // ...but the LEDs don't actually update until you call this.
 
   minutes = (byte) EEPROM.read(0);
-  if(minutes != 1 && minutes != 5 && minutes != 10) {
+  if (minutes != 1 && minutes != 5 && minutes != 10) {
     minutes = 5;
     EEPROM.write(0, (byte) minutes);
   }
 
   Serial.print(F("*>MINUTES:"));
   Serial.println(minutes);
+
+  i2cScanner();
+
+  // default settings
+  // (you can also pass in a Wire library object like &Wire2)
+  if (! bme.begin()) {
+    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+  }
+
+  // weather monitoring
+  bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                  Adafruit_BME280::SAMPLING_X1, // temperature
+                  Adafruit_BME280::SAMPLING_X1, // pressure
+                  Adafruit_BME280::SAMPLING_X1, // humidity
+                  Adafruit_BME280::FILTER_OFF);
 
   digitalWrite(LED_BUILTIN, LOW);
 }
@@ -511,17 +658,61 @@ void loop() {
   if (seconds_counter >= SECONDS) {
     seconds_counter = 0;
 
+//    printValues();
+
     float _h = (float) dht.readHumidity();
     float _t = (float) dht.readTemperature();
 
+    bme.takeForcedMeasurement();
+
+    float _t1 = (float) bme.readTemperature();
+    float _h1 = (float) bme.readHumidity();
+
+    float _p = (float) bme.readPressure() / 100.0F;
+    float _a = (float) bme.readAltitude(SEALEVELPRESSURE_HPA);
+
     if (!isnan(_h) && !isnan(_t)) {
-      humidity = _h + H_OFFSET;
-      temperature = _t + T_OFFSET;
+      h1 = (_h + H_OFFSET1);
+      t1 = (_t + T_OFFSET1);
+    }
+
+    if (!isnan(_h1) && !isnan(_t1)) {
+      h2 = (_h1 + H_OFFSET2);
+      t2 = (_t1 + T_OFFSET2);
+    }
+
+    if (!isnan(_p) && !isnan(_a)) {
+      pressure = _p;
+      altitude = _a;
+    }
+
+    if (!isnan(h1) && !isnan(t1) && !isnan(h2) && !isnan(t2)) {
+      humidity = (h1 + h2) / 2.;
+      temperature = (t1 + t2) / 2.;
 
       Serial.print(F("*>T:"));
       Serial.println(temperature);
       Serial.print(F("*>H:"));
       Serial.println(humidity);
+      Serial.flush();
+
+
+      Serial.print(F("*>P:"));
+      Serial.println(pressure);
+      Serial.print(F("*>A:"));
+      Serial.println(altitude);
+      Serial.flush();
+
+      Serial.print(F("*>T1:"));
+      Serial.println(t1);
+      Serial.print(F("*>H1:"));
+      Serial.println(h1);
+      Serial.flush();
+
+      Serial.print(F("*>T2:"));
+      Serial.println(t2);
+      Serial.print(F("*>H2:"));
+      Serial.println(h2);
       Serial.flush();
 
       if (first) {
