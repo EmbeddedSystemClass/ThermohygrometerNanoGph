@@ -8,7 +8,9 @@
 #include <NeoPixelPainter.h>
 #include <Adafruit_BME280.h>
 
-#define SEALEVELPRESSURE_HPA (1008)
+#define SEALEVELPRESSURE_HPA    1000
+#define PRESSURE_HPA_MIN        980
+#define PRESSURE_HPA_MAX        1045
 
 #define LED_PIN                 2
 #define LED_COUNT               1
@@ -33,11 +35,13 @@
 #define STATE_HUMIDITY          6
 #define STATE_SENSORS           7
 #define STATE_SETTINGS          8
+#define STATE_CLEAR             9
+#define STATE_SET_HPA           10
 
 #define SECONDS                 ((uint8_t) 2)
 
 #define ARRAY_LEN               100
-#define ARRAY_START             2
+#define ARRAY_START             4
 
 #define SCREEN_WIDTH            128 // OLED display width, in pixels
 #define SCREEN_HEIGHT           64 // OLED display height, in pixels
@@ -49,14 +53,16 @@
 #define DATA_X                  10
 #define DATA_Y                  0
 
-#define DSP_AWAKE               10
-#define LED_AWAKE               5
+#define DSP_AWAKE               20
+#define LED_AWAKE               10
 
 volatile uint8_t seconds_counter = 0;
 volatile uint16_t seconds_counter_state = 0;
 volatile uint32_t seconds_counter_sample = 0;
 
-short i_stamp = 0;
+uint8_t i_stamp = 0;
+
+uint16_t sea_pressure = SEALEVELPRESSURE_HPA;
 
 uint8_t minutes = 5;
 
@@ -71,13 +77,11 @@ float t_max = ((float) 0xFFFFFFFF), t_min = ((float) 0xFFFFFFFF), h_max = ((floa
 bool first = true;
 
 uint8_t click = 0;
-bool long_press_mode = false;
-bool enter_long_press_mode = false;
-bool was_long_press_mode = false;
-bool long_click = 0;
-bool last_click_state = false;
-long last_click_state_timestamp = -1;
-long click_state_timestamp = -1;
+uint8_t long_click = 0;
+
+bool last_click_state = LOW;
+long start_press_timestamp = -1;
+long press_timestamp = -1;
 
 bool displayWake = true;
 
@@ -164,7 +168,7 @@ void displayGraph(const byte displayMode) {
   byte max = (byte) EEPROM.read(ARRAY_START + offset);
   byte min = (byte) EEPROM.read(ARRAY_START + offset);
 
-  for (short i = 0; i < i_stamp; i++) {
+  for (uint8_t i = 0; i < i_stamp; i++) {
     //mean += (byte) EEPROM.read(ARRAY_START + i + offset);
     if (max < ((byte) EEPROM.read(ARRAY_START + i + offset))) {
       max = (byte) EEPROM.read(ARRAY_START + i + offset);
@@ -204,7 +208,7 @@ void displayGraph(const byte displayMode) {
   else if (displayMode == 1)
     display.print(F("%"));
 
-  for (short i = 0; i < i_stamp; i++) {
+  for (uint8_t i = 0; i < i_stamp; i++) {
     byte _t = (byte) EEPROM.read(ARRAY_START + i + offset);
     x = (byte) ((GRAPH_Y + (GRAPH_H / 2)) + (((GRAPH_H / 2) * (- _t + mean)) / max_delta));
     display.drawPixel(GRAPH_X + i + 1, x, WHITE);
@@ -247,44 +251,27 @@ void refreshDisplay() {
   display.display();
 }
 
-void readInput() {
-  int val = digitalRead(INPUT_CMD);
+void readClick() {
+  bool val = digitalRead(INPUT_CMD);
   if (val == HIGH) {
-    last_click_state_timestamp = millis();
-    if (click_state_timestamp < 0) {
-      click_state_timestamp = last_click_state_timestamp;
-    }
-    if ((last_click_state_timestamp - click_state_timestamp) > 3000 && !was_long_press_mode) {
-      state = STATE_SETTINGS;
-
-      if (long_press_mode) {
-        long_click = true;
-      }
-
-      enter_long_press_mode = true;
-      long_press_mode = true;
-      was_long_press_mode = true;
+    if (last_click_state == LOW) {
+      start_press_timestamp = millis();
     }
     last_click_state = HIGH;
+    press_timestamp = millis();
   } else {
     long timestamp = millis();
-    if (last_click_state == HIGH && (timestamp - last_click_state_timestamp) > 100) {
-      if (enter_long_press_mode) {
-        enter_long_press_mode = false;
-      } else if (long_press_mode) {
-        long_press_mode = false;
-        state = STATE_WAKE_LED;
+    if ((last_click_state == HIGH) && ((abs(timestamp - press_timestamp)) >= 50)) {
+      if (abs(press_timestamp - start_press_timestamp) > 2000) {
+        ++long_click;
       } else {
-        click++;
+        ++click;
       }
-
-      refreshDisplayFlag = true;
-
-      was_long_press_mode = false;
-      click_state_timestamp = -1;
-      last_click_state_timestamp = timestamp;
-      seconds_counter_state = 0;
       last_click_state = LOW;
+      refreshDisplayFlag = true;
+      seconds_counter_state = 0;
+      press_timestamp = -1;
+      start_press_timestamp = -1;
     }
   }
 }
@@ -294,9 +281,6 @@ void displaySensors() {
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(0, 0);
-
-//  display.println(F("SENSORS:"));
-//  display.println(F("AM2302 & BME280"));
 
   display.println(F("AM2302:"));
 
@@ -345,6 +329,10 @@ void checkState() {
         --click;
         state = STATE_WAKE_LED;
       }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
+      }
 
       break;
     case STATE_WAKE_LED:
@@ -364,6 +352,10 @@ void checkState() {
       if (click > 0) {
         --click;
         state = STATE_TEMPERATURE;
+      }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
       }
 
       break;
@@ -387,6 +379,10 @@ void checkState() {
         --click;
         state = STATE_WAKE_LED;
       }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
+      }
 
       break;
     case STATE_TEMPERATURE:
@@ -405,6 +401,10 @@ void checkState() {
         --click;
         state = STATE_HUMIDITY;
       }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
+      }
 
       break;
     case STATE_HUMIDITY:
@@ -421,6 +421,10 @@ void checkState() {
       if (click > 0) {
         --click;
         state = STATE_SENSORS;
+      }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
       }
 
       break;
@@ -439,6 +443,10 @@ void checkState() {
         --click;
         state = STATE_WAKE_LED;
       }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SETTINGS;
+      }
 
       break;
     case STATE_SETTINGS:
@@ -454,7 +462,7 @@ void checkState() {
       display.println(F(" minutes"));
       display.display();
 
-      if (long_click) {
+      if (click > 0) {
         switch (minutes) {
           case 5:
             minutes = 10;
@@ -466,12 +474,73 @@ void checkState() {
             minutes = 5;
             break;
         }
-        long_click = false;
+        EEPROM.write(0, (byte) minutes);
+        --click;
+      }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_CLEAR;
+      }
+      seconds_counter_state = 0;
+
+      break;
+    case STATE_CLEAR:
+      wakeDisplay();
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(WHITE);
+      display.setCursor(0, 0);
+      display.println(F("### CLEAR SAMPLES ###"));
+      display.println();
+      display.println(F("Click to skip"));
+      display.println(F("Long click to clear"));
+      display.display();
+
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_SET_HPA;
+
+        EEPROM.write(1, (byte) 0x00);
+        i_stamp = 0;
       }
 
-      EEPROM.write(0, (byte) minutes);
-      EEPROM.write(1, (byte) 0x00);
+      if (click > 0) {
+        --click;
+        state = STATE_SET_HPA;
+      }
+      seconds_counter_state = 0;
+      
+      break;
+    case STATE_SET_HPA:
+      wakeDisplay();
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(WHITE);
+      display.setCursor(0, 0);
+      display.println(F("### SET PRESSURE ###"));
+      display.println();
+      display.println(F("Sea level pressure:"));
+      display.print(sea_pressure);
+      display.println(F(" hPa"));
+      display.println(F("Click to increase"));
+      display.println(F("Long click to save"));
+      display.display();
 
+      if (click > 0) {
+        --click;
+        ++sea_pressure;
+        if(sea_pressure > PRESSURE_HPA_MAX) {
+          sea_pressure = PRESSURE_HPA_MIN;
+        }
+      }
+      if (long_click > 0) {
+        --long_click;
+        state = STATE_WAKE_LED;
+
+        EEPROM.write(2, (byte) ((sea_pressure & 0xFF00) >> 8));
+        EEPROM.write(3, (byte) (sea_pressure & 0x00FF));
+      }
+      
       break;
   }
 
@@ -495,24 +564,24 @@ void i2cScanner() {
     error = Wire.endTransmission();
 
     if (error == 0) {
-      Serial.print("I2C device found at address 0x");
+      Serial.print(F("I2C device found at address 0x"));
       if (address < 16)
-        Serial.print("0");
+        Serial.print(F("0"));
       Serial.print(address, HEX);
-      Serial.println("  !");
+      Serial.println(F("!"));
 
       nDevices++;
     } else if (error == 4) {
-      Serial.print("Unknown error at address 0x");
+      Serial.print(F("Error at address 0x"));
       if (address < 16)
         Serial.print("0");
       Serial.println(address, HEX);
     }
   }
   if (nDevices == 0)
-    Serial.println("No I2C devices found\n");
+    Serial.println(F("No I2C device"));
   else
-    Serial.println("done\n");
+    Serial.println(F("done"));
 }
 
 void writeEEPROM() {
@@ -539,34 +608,11 @@ void writeEEPROM() {
   }
 }
 
-//void printValues() {
-//  bme.takeForcedMeasurement();
-//
-//  Serial.print(F("Temperature = "));
-//  Serial.print(bme.readTemperature());
-//  Serial.println(F(" *C"));
-//
-//  Serial.print(F("Pressure = "));
-//
-//  Serial.print(bme.readPressure() / 100.0F);
-//  Serial.println(F(" hPa"));
-//
-//  Serial.print(F("Approx. Altitude = "));
-//  Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
-//  Serial.println(F(" m"));
-//
-//  Serial.print(F("Humidity = "));
-//  Serial.print(bme.readHumidity());
-//  Serial.println(F(" %"));
-//
-//  Serial.println();
-//}
-
 void bmeBegin() {
   // default settings
   // (you can also pass in a Wire library object like &Wire2)
   if (! bme.begin()) {
-    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+    Serial.println(F("BME280 BEGIN ERROR!"));
   }
 
   // weather monitoring
@@ -596,11 +642,11 @@ void setup() {
   Serial.println(F("*>INIT"));
 
   while (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
+    Serial.println(F("SSD1306 ERROR"));
     delay(500);
   }
   delay(500);
-  Serial.println(F("*>DSPINIT"));
+  Serial.println(F("DSPINIT"));
 
   display.clearDisplay();
   display.setTextSize(1);
@@ -644,17 +690,37 @@ void setup() {
     EEPROM.write(0, (byte) minutes);
   }
 
-  Serial.print(F("*>MINUTES:"));
+  Serial.print(F("MINUTES:"));
   Serial.println(minutes);
 
   i2cScanner();
 
   bmeBegin();
 
-//  byte i_temp = EEPROM.read(1);
-//  if(i_temp >= 0 && i_temp <= ARRAY_LEN) {
-//    i_stamp = (short) i_temp;
-//  }
+  byte i_temp = EEPROM.read(1);
+  Serial.print(F("SAMPLES1:"));
+  Serial.println(i_temp);
+  if (i_temp >= 0 && i_temp <= ARRAY_LEN) {
+    i_stamp = (uint8_t) i_temp;
+  } else {
+    i_stamp = 0;
+  }
+  Serial.print(F("SAMPLES2:"));
+  Serial.println(i_stamp);
+
+  byte _h = EEPROM.read(2);
+  byte _l = EEPROM.read(3);
+  sea_pressure = (uint16_t)((_h << 8) | _l);
+  Serial.print(F("PRESSURE1:"));
+  Serial.println(sea_pressure);
+  if(sea_pressure > PRESSURE_HPA_MAX || sea_pressure < PRESSURE_HPA_MIN) {
+    sea_pressure = SEALEVELPRESSURE_HPA;
+
+    EEPROM.write(2, (byte) ((sea_pressure & 0xFF00) >> 8));
+    EEPROM.write(3, (byte) (sea_pressure & 0x00FF));
+  }
+  Serial.print(F("PRESSURE2:"));
+  Serial.println(sea_pressure);
 
   digitalWrite(LED_BUILTIN, LOW);
 }
@@ -668,7 +734,7 @@ void loop() {
   if (seconds_counter >= SECONDS) {
     seconds_counter = 0;
 
-//    printValues();
+    //    printValues();
 
     uint8_t readVals = 0x00;
 
@@ -681,45 +747,45 @@ void loop() {
     float _h1 = (float) bme.readHumidity();
 
     float _p = (float) bme.readPressure() / 100.0F;
-    float _a = (float) bme.readAltitude(SEALEVELPRESSURE_HPA);
+    float _a = (float) bme.readAltitude(sea_pressure);
 
-    if(!isnan(_t)) {
+    if (!isnan(_t)) {
       readVals |= (0x01 << 0);
       t1 = (_t + T_OFFSET1);
     }
-    if(!isnan(_h)) {
+    if (!isnan(_h)) {
       readVals |= (0x01 << 2);
       h1 = (_h + H_OFFSET1);
     }
-    if(!isnan(_t1)) {
+    if (!isnan(_t1)) {
       readVals |= (0x01 << 1);
       t2 = (_t1 + T_OFFSET2);
     }
-    if(!isnan(_h1)) {
+    if (!isnan(_h1)) {
       readVals |= (0x01 << 3);
       h2 = (_h1 + H_OFFSET2);
     }
-    if(!isnan(_p)) {
+    if (!isnan(_p)) {
       readVals |= (0x01 << 4);
       pressure = _p;
     }
-    if(!isnan(_a)) {
+    if (!isnan(_a)) {
       readVals |= (0x01 << 5);
       altitude = _a;
     }
 
     uint8_t _f = 0x00;
-    if((_f = (readVals & 0x01) + ((readVals >> 1) & 0x01)) > 0) {
+    if ((_f = (readVals & 0x01) + ((readVals >> 1) & 0x01)) > 0) {
       Serial.print(F("TEMPERATURE READS: "));
       Serial.println((int) _f);
       temperature = 0.F;
-      if(readVals & 0x01) {
-        Serial.print(F("TEMPERATURE READ FROM AM2302: "));
+      if (readVals & 0x01) {
+        Serial.print(F("TEMPERATURE FROM AM2302: "));
         Serial.println(t1);
         temperature += t1;
       }
-      if(readVals & (0x01 << 1)) {
-        Serial.print(F("TEMPERATURE READ FROM BME280: "));
+      if (readVals & (0x01 << 1)) {
+        Serial.print(F("TEMPERATURE FROM BME280: "));
         Serial.println(t2);
         temperature += t2;
       } else {
@@ -733,17 +799,17 @@ void loop() {
     }
 
     _f = 0x00;
-    if((_f = ((readVals >> 2) & 0x01) + ((readVals >> 3) & 0x01)) > 0) {
+    if ((_f = ((readVals >> 2) & 0x01) + ((readVals >> 3) & 0x01)) > 0) {
       Serial.print(F("HUMIDITY READS: "));
       Serial.println((int) _f);
       humidity = 0.F;
-      if(readVals & (0x01 << 2)) {
-        Serial.print(F("HUMIDITY READ FROM AM2302: "));
+      if (readVals & (0x01 << 2)) {
+        Serial.print(F("HUMIDITY FROM AM2302: "));
         Serial.println(h1);
         humidity += h1;
       }
-      if(readVals & (0x01 << 3)) {
-        Serial.print(F("HUMIDITY READ FROM BME280: "));
+      if (readVals & (0x01 << 3)) {
+        Serial.print(F("HUMIDITY FROM BME280: "));
         Serial.println(h2);
         humidity += h2;
       } else {
@@ -775,7 +841,7 @@ void loop() {
         h_min = humidity;
       }
 
-      readInput();
+      readClick();
 
       // Check max and min
       if (temperature > t_max) {
@@ -803,15 +869,15 @@ void loop() {
     }
   }
 
-  readInput();
+  readClick();
 
   // Check state for FSM
   checkState();
 
-  readInput();
+  readClick();
 
   // Write data on EEPROM
   writeEEPROM();
 
-  readInput();
+  readClick();
 }
