@@ -37,7 +37,7 @@
 #define SECONDS                 ((uint8_t) 2)
 
 #define ARRAY_LEN               100
-#define ARRAY_START             1
+#define ARRAY_START             2
 
 #define SCREEN_WIDTH            128 // OLED display width, in pixels
 #define SCREEN_HEIGHT           64 // OLED display height, in pixels
@@ -62,11 +62,11 @@ uint8_t minutes = 5;
 
 volatile uint8_t state = STATE_IDLE;
 
-float temperature = -1, humidity = -1;
-float pressure = -1, altitude = -1;
-float t1 = -1, h1 = -1;
-float t2 = -1, h2 = -1;
-float t_max = -1, t_min = -1, h_max = -1, h_min = -1;
+float temperature = ((float) 0xFFFFFFFF), humidity = ((float) 0xFFFFFFFF);
+float pressure = ((float) 0xFFFFFFFF), altitude = ((float) 0xFFFFFFFF);
+float t1 = ((float) 0xFFFFFFFF), h1 = ((float) 0xFFFFFFFF);
+float t2 = ((float) 0xFFFFFFFF), h2 = ((float) 0xFFFFFFFF);
+float t_max = ((float) 0xFFFFFFFF), t_min = ((float) 0xFFFFFFFF), h_max = ((float) 0xFFFFFFFF), h_min = ((float) 0xFFFFFFFF);
 
 bool first = true;
 
@@ -79,7 +79,6 @@ bool last_click_state = false;
 long last_click_state_timestamp = -1;
 long click_state_timestamp = -1;
 
-volatile bool busy = false;
 bool displayWake = true;
 
 bool refreshDisplayFlag = false;
@@ -471,6 +470,7 @@ void checkState() {
       }
 
       EEPROM.write(0, (byte) minutes);
+      EEPROM.write(1, (byte) 0x00);
 
       break;
   }
@@ -526,6 +526,7 @@ void writeEEPROM() {
       EEPROM.write(ARRAY_START + i_stamp, (byte) round(temperature));
       EEPROM.write(ARRAY_START + i_stamp + ARRAY_LEN, (byte) round(humidity));
       i_stamp++;
+      EEPROM.write(1, (byte) i_stamp);
     } else {
       for (short i = 0; i < ARRAY_LEN - 1; i++) {
         EEPROM.write(ARRAY_START + i, EEPROM.read(ARRAY_START + i + 1));
@@ -560,6 +561,21 @@ void writeEEPROM() {
 //
 //  Serial.println();
 //}
+
+void bmeBegin() {
+  // default settings
+  // (you can also pass in a Wire library object like &Wire2)
+  if (! bme.begin()) {
+    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+  }
+
+  // weather monitoring
+  bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                  Adafruit_BME280::SAMPLING_X1, // temperature
+                  Adafruit_BME280::SAMPLING_X1, // pressure
+                  Adafruit_BME280::SAMPLING_X1, // humidity
+                  Adafruit_BME280::FILTER_OFF);
+}
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -633,18 +649,12 @@ void setup() {
 
   i2cScanner();
 
-  // default settings
-  // (you can also pass in a Wire library object like &Wire2)
-  if (! bme.begin()) {
-    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
-  }
+  bmeBegin();
 
-  // weather monitoring
-  bme.setSampling(Adafruit_BME280::MODE_FORCED,
-                  Adafruit_BME280::SAMPLING_X1, // temperature
-                  Adafruit_BME280::SAMPLING_X1, // pressure
-                  Adafruit_BME280::SAMPLING_X1, // humidity
-                  Adafruit_BME280::FILTER_OFF);
+//  byte i_temp = EEPROM.read(1);
+//  if(i_temp >= 0 && i_temp <= ARRAY_LEN) {
+//    i_stamp = (short) i_temp;
+//  }
 
   digitalWrite(LED_BUILTIN, LOW);
 }
@@ -660,6 +670,8 @@ void loop() {
 
 //    printValues();
 
+    uint8_t readVals = 0x00;
+
     float _h = (float) dht.readHumidity();
     float _t = (float) dht.readTemperature();
 
@@ -671,50 +683,91 @@ void loop() {
     float _p = (float) bme.readPressure() / 100.0F;
     float _a = (float) bme.readAltitude(SEALEVELPRESSURE_HPA);
 
-    if (!isnan(_h) && !isnan(_t)) {
-      h1 = (_h + H_OFFSET1);
+    if(!isnan(_t)) {
+      readVals |= (0x01 << 0);
       t1 = (_t + T_OFFSET1);
     }
-
-    if (!isnan(_h1) && !isnan(_t1)) {
-      h2 = (_h1 + H_OFFSET2);
+    if(!isnan(_h)) {
+      readVals |= (0x01 << 2);
+      h1 = (_h + H_OFFSET1);
+    }
+    if(!isnan(_t1)) {
+      readVals |= (0x01 << 1);
       t2 = (_t1 + T_OFFSET2);
     }
-
-    if (!isnan(_p) && !isnan(_a)) {
+    if(!isnan(_h1)) {
+      readVals |= (0x01 << 3);
+      h2 = (_h1 + H_OFFSET2);
+    }
+    if(!isnan(_p)) {
+      readVals |= (0x01 << 4);
       pressure = _p;
+    }
+    if(!isnan(_a)) {
+      readVals |= (0x01 << 5);
       altitude = _a;
     }
 
-    if (!isnan(h1) && !isnan(t1) && !isnan(h2) && !isnan(t2)) {
-      humidity = (h1 + h2) / 2.;
-      temperature = (t1 + t2) / 2.;
-
-      Serial.print(F("*>T:"));
+    uint8_t _f = 0x00;
+    if((_f = (readVals & 0x01) + ((readVals >> 1) & 0x01)) > 0) {
+      Serial.print(F("TEMPERATURE READS: "));
+      Serial.println((int) _f);
+      temperature = 0.F;
+      if(readVals & 0x01) {
+        Serial.print(F("TEMPERATURE READ FROM AM2302: "));
+        Serial.println(t1);
+        temperature += t1;
+      }
+      if(readVals & (0x01 << 1)) {
+        Serial.print(F("TEMPERATURE READ FROM BME280: "));
+        Serial.println(t2);
+        temperature += t2;
+      } else {
+        Serial.print(F("BME REINIT: "));
+        Serial.println(_t1);
+        bmeBegin();
+      }
+      temperature /= float(_f);
+      Serial.print(F("TEMPERATURE MEAN: "));
       Serial.println(temperature);
-      Serial.print(F("*>H:"));
+    }
+
+    _f = 0x00;
+    if((_f = ((readVals >> 2) & 0x01) + ((readVals >> 3) & 0x01)) > 0) {
+      Serial.print(F("HUMIDITY READS: "));
+      Serial.println((int) _f);
+      humidity = 0.F;
+      if(readVals & (0x01 << 2)) {
+        Serial.print(F("HUMIDITY READ FROM AM2302: "));
+        Serial.println(h1);
+        humidity += h1;
+      }
+      if(readVals & (0x01 << 3)) {
+        Serial.print(F("HUMIDITY READ FROM BME280: "));
+        Serial.println(h2);
+        humidity += h2;
+      } else {
+        Serial.print(F("BME REINIT:"));
+        Serial.println(_h1);
+        bmeBegin();
+      }
+      humidity /= float(_f);
+      Serial.print(F("HUMIDITY MEAN: "));
       Serial.println(humidity);
-      Serial.flush();
+    }
 
+    Serial.print(F("TEMPERATURE: "));
+    Serial.println(temperature);
+    Serial.print(F("HUMIDITY: "));
+    Serial.println(humidity);
+    Serial.print(F("PRESSURE: "));
+    Serial.println(pressure);
+    Serial.print(F("ALTITUDE: "));
+    Serial.println(altitude);
+    Serial.println();
 
-      Serial.print(F("*>P:"));
-      Serial.println(pressure);
-      Serial.print(F("*>A:"));
-      Serial.println(altitude);
-      Serial.flush();
-
-      Serial.print(F("*>T1:"));
-      Serial.println(t1);
-      Serial.print(F("*>H1:"));
-      Serial.println(h1);
-      Serial.flush();
-
-      Serial.print(F("*>T2:"));
-      Serial.println(t2);
-      Serial.print(F("*>H2:"));
-      Serial.println(h2);
-      Serial.flush();
-
+    _f = 0x00;
+    if (!isnan(humidity) && !isnan(temperature)) {
       if (first) {
         t_min = temperature;
         t_max = temperature;
